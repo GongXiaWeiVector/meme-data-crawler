@@ -120,6 +120,45 @@ impl FileManager {
         Ok(metadata_list)
     }
 
+    /// 重寫 metadata.jsonl（用於去重後更新）
+    pub fn rewrite_metadata(&self, metadata_list: &[ImageMetadata]) -> Result<()> {
+        let path = format!("{}/metadata.jsonl", self.root_dir);
+        let temp_path = format!("{}.tmp", path);
+        
+        // 先寫到暫存檔
+        let file = File::create(&temp_path)
+            .context("無法建立暫存檔")?;
+        let mut writer = BufWriter::new(file);
+        
+        for metadata in metadata_list {
+            serde_json::to_writer(&mut writer, metadata)
+                .context("無法寫入 metadata")?;
+            writeln!(writer).context("無法寫入換行符號")?;
+        }
+        
+        writer.flush().context("無法 flush buffer")?;
+        
+        // 原子性地重新命名
+        fs::rename(&temp_path, &path)
+            .context("無法更新 metadata.jsonl")?;
+        
+        Ok(())
+    }
+
+    /// 備份 metadata.jsonl
+    pub fn backup_metadata(&self) -> Result<()> {
+        let path = format!("{}/metadata.jsonl", self.root_dir);
+        let backup_path = format!("{}/metadata.jsonl.backup", self.root_dir);
+        
+        if Path::new(&path).exists() {
+            fs::copy(&path, &backup_path)
+                .context("無法備份 metadata.jsonl")?;
+            println!("📦 已備份 metadata.jsonl -> metadata.jsonl.backup");
+        }
+        
+        Ok(())
+    }
+
     /// 儲存圖片檔案
     pub fn save_image(&self, filename: &str, data: &[u8]) -> Result<()> {
         let path = format!("{}/images/{}", self.root_dir, filename);

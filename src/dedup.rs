@@ -1,7 +1,7 @@
 use crate::types::{ImageMetadata, DuplicateRecord};
 use crate::file_manager::FileManager;
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 /// 去重分析器
@@ -75,17 +75,24 @@ impl DedupAnalyzer {
         Ok(())
     }
     
-    /// 自動刪除重複圖片（保留第一個）
+    /// 自動刪除重複圖片（保留第一個）+ 更新 metadata
     pub fn remove_duplicates(&self, result: &DedupResult, dry_run: bool) -> Result<()> {
         if dry_run {
-            println!("🔍 預覽模式：不會實際刪除檔案");
+            println!("🔍 預覽模式：不會實際刪除檔案\n");
         } else {
-            println!("⚠️  警告：即將刪除重複圖片！");
+            println!("⚠️  警告：即將刪除重複圖片並更新 metadata！\n");
+            
+            // 先備份 metadata
+            self.file_manager.backup_metadata()?;
         }
         
+        // 收集要刪除的檔名
+        let mut files_to_remove = HashSet::new();
         let mut removed_count = 0;
         
         for dup_group in &result.duplicates {
+            println!("📦 重複組 (Hash: {}...):", &dup_group.content_hash[..12]);
+            
             // 保留第一個，刪除其餘
             for (i, filename) in dup_group.files.iter().enumerate() {
                 if i == 0 {
@@ -93,6 +100,7 @@ impl DedupAnalyzer {
                     continue;
                 }
                 
+                files_to_remove.insert(filename.clone());
                 let path = self.file_manager.get_image_path(filename);
                 
                 if dry_run {
@@ -100,11 +108,11 @@ impl DedupAnalyzer {
                 } else {
                     match fs::remove_file(&path) {
                         Ok(_) => {
-                            println!("  ❌ 已刪除: {}", filename);
+                            println!("  ❌ 已刪除圖片: {}", filename);
                             removed_count += 1;
                         }
                         Err(e) => {
-                            eprintln!("  ⚠️  刪除失敗 ({}): {}", filename, e);
+                            eprintln!("  ⚠️  刪除圖片失敗 ({}): {}", filename, e);
                         }
                     }
                 }
@@ -112,8 +120,44 @@ impl DedupAnalyzer {
             println!();
         }
         
+        // 更新 metadata.jsonl
+        if !dry_run && !files_to_remove.is_empty() {
+            println!("📝 更新 metadata.jsonl...");
+            
+            // 讀取所有 metadata
+            let all_metadata = self.file_manager.load_all_metadata()?;
+            let original_count = all_metadata.len();
+            
+            // 過濾掉已刪除的檔案
+            let filtered_metadata: Vec<ImageMetadata> = all_metadata
+                .into_iter()
+                .filter(|m| !files_to_remove.contains(&m.filename))
+                .collect();
+            
+            let filtered_count = filtered_metadata.len();
+            let removed_metadata_count = original_count - filtered_count;
+            
+            // 重寫 metadata.jsonl
+            self.file_manager.rewrite_metadata(&filtered_metadata)?;
+            
+            println!("✅ metadata.jsonl 已更新");
+            println!("   原始記錄: {} 筆", original_count);
+            println!("   保留記錄: {} 筆", filtered_count);
+            println!("   移除記錄: {} 筆", removed_metadata_count);
+            println!();
+        }
+        
+        // 總結
         if !dry_run {
-            println!("✅ 已刪除 {} 個重複檔案", removed_count);
+            println!("╔══════════════════════════════════╗");
+            println!("║       ✅ 去重完成               ║");
+            println!("╠══════════════════════════════════╣");
+            println!("║ 刪除圖片:   {:>18} ║", removed_count);
+            println!("║ 更新 metadata: {:>14} ║", "完成");
+            println!("║ 備份檔案:   {:>18} ║", "metadata.jsonl.backup");
+            println!("╚══════════════════════════════════╝");
+        } else {
+            println!("💡 預覽完成！執行 'cargo run dedup remove' 來實際刪除");
         }
         
         Ok(())
@@ -145,8 +189,12 @@ impl DedupResult {
         println!("║ 唯一圖片:   {:>18} ║", self.unique_images);
         println!("║ 重複組數:   {:>18} ║", self.duplicate_groups);
         println!("║ 重複圖片:   {:>18} ║", self.duplicate_images);
-        println!("║ 重複率:     {:>17.1}% ║", 
-            (self.duplicate_images as f64 / self.total_images as f64) * 100.0);
+        
+        if self.total_images > 0 {
+            println!("║ 重複率:     {:>17.1}% ║", 
+                (self.duplicate_images as f64 / self.total_images as f64) * 100.0);
+        }
+        
         println!("╚══════════════════════════════════╝\n");
         
         if self.duplicate_groups > 0 {
@@ -154,7 +202,7 @@ impl DedupResult {
             
             for (i, dup) in self.duplicates.iter().take(10).enumerate() {
                 println!("  組 {}: {} 張重複", i + 1, dup.files.len());
-                println!("  Hash: {}", &dup.content_hash[..16]);
+                println!("  Hash: {}...", &dup.content_hash[..16]);
                 for (j, file) in dup.files.iter().enumerate() {
                     let marker = if j == 0 { "✅ 保留" } else { "❌ 重複" };
                     println!("    {} {}", marker, file);
@@ -163,8 +211,10 @@ impl DedupResult {
             }
             
             if self.duplicates.len() > 10 {
-                println!("  ... 還有 {} 組重複", self.duplicates.len() - 10);
+                println!("  ... 還有 {} 組重複\n", self.duplicates.len() - 10);
             }
+        } else {
+            println!("🎉 沒有發現重複圖片！\n");
         }
     }
 }
