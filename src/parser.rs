@@ -1,5 +1,5 @@
 use scraper::{Html, Selector};
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// Parser Trait - 不同網站實作不同的 Parser
 pub trait PageParser: Send + Sync {
